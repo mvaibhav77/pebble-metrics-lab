@@ -1,5 +1,7 @@
 # Expose service status (active, backoff, error, inactive) in `/v1/metrics`
 
+Posted as [canonical/pebble#1150](https://github.com/canonical/pebble/issues/1150).
+
 ## Summary
 
 `/v1/metrics` reports a service as either active (`1`) or not active (`0`). Pebble itself tracks four statuses (`active`, `backoff`, `error`, `inactive`), but the last three all become `0`. As a result, Prometheus cannot tell a service that failed and that Pebble gave up on from a service that was stopped on purpose or finished successfully.
@@ -49,7 +51,7 @@ pebble_service_start_total{service="stopped"} 1
 
 ## Impact
 
-I built a small test setup (Pebble from `master` running a web service and a worker in a container, scraped by Prometheus, with cAdvisor and Grafana) and sampled `/v1/services` and `/v1/metrics` once per second for five scripted scenarios: healthy, crash loop, crashed with `on-failure: ignore`, stopped by an operator, and exited successfully with `on-success: ignore`.
+I built a small test setup ([mvaibhav77/pebble-metrics-lab](https://github.com/mvaibhav77/pebble-metrics-lab): Pebble from `master` running a web service and a worker in a container, scraped by Prometheus, with cAdvisor and Grafana) and sampled `/v1/services` and `/v1/metrics` once per second for five scripted scenarios: healthy, crash loop, crashed with `on-failure: ignore`, stopped by an operator, and exited successfully with `on-success: ignore`. The scripts, raw data and full report are in that repo (`scripts/simulate.sh`, `results/`).
 
 - **Crash loops are detectable today** by combining `pebble_service_active == 0` with `increase(pebble_service_start_total[...]) > 0`. The existing metrics matched Pebble's status 100% of the time for the healthy and crash-loop scenarios.
 - **Failed, stopped and successfully finished services were indistinguishable.** All 345 samples from those three scenarios had the same metric values (`active` 0, start counter flat), while Pebble reported `error` or `inactive`.
@@ -118,3 +120,4 @@ Open questions:
 - #104: introspecting failing and restarting services
 - #642: `max-start-retries` / `backoff-attempts`
 - #1124: recent metric naming changes
+

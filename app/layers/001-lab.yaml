@@ -1,0 +1,37 @@
+summary: Pebble metrics lab
+description: |
+  Two services in one container: a Flask web app (with an HTTP health check)
+  and a background worker that crashes and/or leaks memory on purpose.
+
+services:
+  web:
+    override: replace
+    summary: Flask app served by gunicorn
+    command: gunicorn --bind 0.0.0.0:8080 --workers 2 --chdir /app web:app
+    startup: enabled
+    on-check-failure:
+      web-up: restart
+
+  worker:
+    override: replace
+    summary: Misbehaving background worker (see WORKER_* env vars)
+    command: python3 /app/worker.py
+    startup: enabled
+    on-success: restart
+    on-failure: restart
+    # 1s, 2s, 4s, 8s, 16s, 20s, 20s, ... The backoff resets once the worker
+    # stays up for backoff-limit (20s), so with the default 30s crash interval
+    # every restart uses the 1s delay.
+    backoff-delay: 1s
+    backoff-factor: 2
+    backoff-limit: 20s
+
+checks:
+  web-up:
+    override: replace
+    level: alive
+    period: 5s
+    timeout: 1s
+    threshold: 3
+    http:
+      url: http://127.0.0.1:8080/health

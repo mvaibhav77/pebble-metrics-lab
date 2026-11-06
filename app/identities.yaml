@@ -1,0 +1,12 @@
+# Seeded at container start via `pebble run --identities=...`
+# (equivalent to `pebble update-identities --replace`).
+#
+# DEV-ONLY credentials for the local lab. Do not reuse anywhere else.
+#   username: metrics-lab
+#   password: pebble-lab-dev
+# Hash generated with: openssl passwd -6 -salt pebblelabsalt pebble-lab-dev
+identities:
+  metrics-lab:
+    access: metrics
+    basic:
+      password: $6$pebblelabsalt$eYv.HngY/zh2obp84Smr4t0WHfGTf3Z6eQEaXGmN4Tr2.9LlezweZ9EUBX0rdrVQm7UcswvfOEiGxrDkFpb9K0

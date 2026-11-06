@@ -10,6 +10,10 @@ whether new metrics are worth adding. It tries to answer three questions:
 3. What does cAdvisor (per container) show for CPU/memory compared with the
    real per-process usage of two services in one container? Is per-service
    resource telemetry a real gap?
+4. Can the metrics tell a failed service from a stopped one?
+
+The resulting proposal is [canonical/pebble#1150](https://github.com/canonical/pebble/issues/1150)
+(draft in [`proposal/github-issue.md`](proposal/github-issue.md)).
 
 ## What's in the stack
 
@@ -107,6 +111,8 @@ docker exec metrics-lab-app pebble restart web
   RSS/PSS. Next to that it prints cAdvisor's whole-container CPU rate and memory for the
   same window, queried from Prometheus. The sampling logic is in
   `scripts/procstat.py`.
+- `scripts/simulate.sh [seconds] [window]`: the failed-vs-stopped simulation
+  (experiment 4).
 
 ## Experiments
 
@@ -207,14 +213,87 @@ leaking or burning CPU (the sawtooth in container memory comes from the worker
 leak and crash cycle)? How much do shared gunicorn pages (RSS vs PSS) and page
 cache (working set vs RSS) blur the picture?
 
+### 4. Failed vs stopped (simulation)
+
+```sh
+scripts/simulate.sh 120 30   # duration and crash-loop window, in seconds
+```
+
+This adds a layer with five services that run side by side inside the app
+container: `sim-healthy`, `sim-crashloop` (crashes 2s after each start),
+`sim-failed` (crashes once, `on-failure: ignore`), `sim-stopped` (stopped by
+`pebble stop` after 10s) and `sim-clean-exit` (exits 0, `on-success: ignore`).
+[`scripts/simulate.py`](scripts/simulate.py) samples Pebble's status from
+`/v1/services` and the scraped values from `/v1/metrics` once per second.
+[`scripts/analyze_sim.py`](scripts/analyze_sim.py) then classifies each sample
+using only today's metrics:
+
+- running: `pebble_service_active == 1`
+- crash-looping: `active == 0` and the start counter rose within the window
+- down-unknown: `active == 0` and the counter is flat
+
+It compares that classification with Pebble's real status. Raw CSV and the
+report go to `results/`. To re-analyse a saved run with another window, use
+`python3 scripts/analyze_sim.py results/sim-<stamp>.csv 60`.
+
+The `sim-*` services stay in Pebble's service list (and metrics) until the
+app container is recreated with `docker compose up -d --force-recreate app`.
+
 ## Findings
 
-_Fill in after running the experiments._
+Measured with Pebble v1.33.2 built from `master`.
 
 ### 1. Restart-loop detection
 
+- Worker crashing every 30s: `increase(pebble_service_start_total[5m])` ≈ 10,
+  `avg_over_time(pebble_service_active[5m])` ≈ 0.97.
+- Worker crashing after 2s (backoff capped at 20s): increase ≈ 13 per 5m,
+  active average falling toward ≈ 0.1. `pebble services` showed `backoff`
+  nearly the whole time.
+- Crash loops can be detected by combining `pebble_service_active == 0` with a
+  rising start counter, but the restart rate alone does not show severity, and
+  every start (crash, health-check restart, manual `pebble start`) increments
+  the same counter.
+
 ### 2. Per-service uptime / start time
+
+- `pebble_service_start_total` gives no time of the last start.
+- `current-since` is available from `/v1/services` (`scripts/uptime.sh`), but
+  that endpoint is not served to Prometheus over plain HTTP.
+- The PromQL approximation works to within the scrape interval, but it keeps
+  counting while a service is down, so it is not an uptime.
 
 ### 3. Per-service resource telemetry
 
+- Under load, per-process CPU summed to ≈ 0.70 cores (web 0.50, worker 0.20);
+  cAdvisor reported ≈ 0.72 cores for the container, with no per-service split.
+- Container memory rose from ≈ 72 MiB to ≈ 88 MiB while the five simulation
+  services ran; cAdvisor cannot attribute it to a service.
+
+### 4. Failed vs stopped
+
+- A worker with `on-failure: ignore` that crashed showed `error` in
+  `pebble services`; the same worker stopped with `pebble stop` showed
+  `inactive`. Both times `/v1/metrics` reported
+  `pebble_service_active{service="worker"} 0` and a flat start counter.
+- Simulation ([`results/sim-20261106-182430.md`](results/sim-20261106-182430.md)),
+  605 samples: healthy and crash-loop scenarios matched Pebble's status 100%
+  of the time. All 345 samples from the failed, stopped and clean-exit
+  scenarios had identical metric values.
+- A single crash, stop or exit is classified as a crash loop for the length of
+  the window:
+
+  | Window | Crash-loop samples missed (of 98) | One-off failures and stops reported as a crash loop (of 345) |
+  |---|---|---|
+  | 10s | 18 | 12 |
+  | 30s | 0 | 72 |
+  | 60s | 0 | 162 |
+
 ### Conclusion: new metrics needed?
+
+Crash loops, health checks and running/not-running are covered today. The gap
+that is cheap to close is exposing Pebble's existing service status
+(`active`, `backoff`, `error`, `inactive`) as a metric, which is what
+[canonical/pebble#1150](https://github.com/canonical/pebble/issues/1150)
+proposes. Start time is a smaller gap. Per-service CPU and memory is a real gap
+but a poor fit for Pebble.
